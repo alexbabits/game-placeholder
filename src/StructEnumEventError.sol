@@ -5,10 +5,10 @@ abstract contract StructEnumEventError {
 
     struct Stats {
         uint8 combatLevel; // [1-100]
-        uint16 maxHP; // [10, 1337] as the max. Based on vitality.
+        int16 maxHP; // [10, 1337] as the max. Based on vitality.
         int16 currentHP; // Might be easier to make this an int, so if it's negative or 0, you die.
         uint16 attackPower; // use power+speed to calculate dps, or power to calculate max hit.
-        int16 attackSpeed; // lower = faster
+        int16 attackInterval; // lower = faster
         int16 dodgeChance; // higher = better [0, 10000] 100%
         uint16 critChance; // higher = better [0, 10000] 100%
         uint16 critPower; // 150 to 400 (1.1x to 4x)
@@ -28,13 +28,35 @@ abstract contract StructEnumEventError {
         uint32 xp;
     }
 
+    struct BoostInfo {
+        bool isBoosted;
+        uint64 duration;
+    }
+
+    struct ItemInfo {
+        BoostType boostType;
+        bool consumable;
+        bool temporary;
+        uint64 duration; // 0 for immediate effect
+        int16 hp;
+        uint16 attackPower;
+        int16 attackInterval;
+        int16 dodgeChance;
+        uint16 critChance;
+        uint16 critPower;
+        uint16 magicPower;
+        uint16 protection;
+        int16 accuracy;
+    }
+
     struct GearInfo {
         GearSlot slot;
+        bool twoHand; // Does it require both mainHand and offHand gear slot to equip?
         uint8 requiredStrengthLevel;
         uint8 requiredAgilityLevel;
         uint8 requiredIntelligenceLevel;
         uint16 attackPower; // use power+speed to calculate dps, or power to calculate max hit.
-        int16 attackSpeed; // lower = faster
+        int16 attackInterval; // lower = faster
         int16 dodgeChance; // higher = better [0, 10000] 100%
         uint16 critChance; // higher = better [0, 10000] 100%
         uint16 critPower; // 150 to 400 (1.1x to 4x)
@@ -42,6 +64,18 @@ abstract contract StructEnumEventError {
         uint16 protection; // gained from armor
         int16 accuracy; // for magic, bows, and melee
         int8 attackRange; // maximum attack distance
+    }
+
+    struct BoostDuration {
+        int16 hp;
+        uint16 attackPower;
+        int16 attackInterval;
+        int16 dodgeChance;
+        uint16 critChance;
+        uint16 critPower;
+        uint16 magicPower;
+        uint16 protection;
+        int16 accuracy;
     }
   
     struct ResourceInfo {
@@ -66,6 +100,7 @@ abstract contract StructEnumEventError {
     enum GearSlot {NULL, MAIN_HAND, OFF_HAND, HEAD, CHEST, LEGS, GLOVES, BOOTS, CLOAK, RING_ONE, RING_TWO, AMULET}
     enum Skill {MINING, BLACKSMITHING, WOODCUTTING, WOODWORKING, FISHING, COOKING, LEATHERWORKING, CLOTHWORKING, ALCHEMY, ENCHANTING}
     enum Attribute {VITALITY, STRENGTH, AGILITY, INTELLIGENCE}
+    enum BoostType {HP, ATTACK_POWER, ATTACK_INTERVAL, DODGE, CRIT_CHANCE, CRIT_POWER, MAGIC_POWER, PROTECTION, ACCURACY}
 
     enum Resource {
         NORMAL_TREE, OAK_TREE, WILLOW_TREE, MAPLE_TREE, YEW_TREE, MAGIC_TREE,
@@ -94,7 +129,9 @@ abstract contract StructEnumEventError {
         IRON_PICKAXE, // 16 (not implemented URI yet)
         RING_OF_BLOOD, // 17 (not implemented URI yet)
         IRON_ORE, // 18 (not implemented URI yet)
-        COAL_ORE // 19 (not implemented URI yet)
+        COAL_ORE, // 19 (not implemented URI yet)
+        HEALTH_POTION, // 20 (not implemented URI yet)
+        PROTECTION_POTION // 21 (not implemented URI yet)
     }
 
     enum Location {
@@ -163,26 +200,24 @@ abstract contract StructEnumEventError {
     error NotAtLocation(); // 0x039906b7
     error NotEnoughGold(); // 0x3a2298cd
     error NotShopLocation(); // 0x725cae1b
+    error CannotConsume(); // ???
+    error AlreadyBoosted(); // ???
     error DoNotOwnItem(); // 0x62b51396
-    error InvalidTool(); //
+    error NotTool(); // 0xc1ab5181
     error WrongToolForTheJob(); // 0xeea110e5
     error Noob(); // 0x53bc8411
     error NotGear(); // 0xf0a68a55
     error CannotUnequipNothing(); // 0x92746c1a
     error ItemNotEquipped(); // 0x54962c76
     error AlreadyEquipped(); // 0x2e53a303
+    error ResourceNotHere(); // ????
+    error NotInnLocation(); // ???
     error NotGameContract(); // 0xd5fe8702
     error MintingTooExpensive(); // 0x01e49b9b
     error CannotTransferCharacters(); // 0x48d2e23c
     error DoesNotOwnCharacter(); // 0x1c2d9d38
 
     event SkillLevelUp(Skill skill, uint8 indexed level);
-
-    /*
-    struct ItemInfo {
-        // Will need this for potions and stuff
-    }
-    */
 
     //enum Monsters {NOTHING, FROG, RABBIT, BEAR, SPIDER, WOLF, THIEF, MERCENARY, THUG, SKELETON, ZOMBIE, VAMPIRE, GREEN_DRAGON}
     //enum Bosses {NOTHING, GULAK, JASTIK, ULTAIR, MEBHIM, GHIVILIN}

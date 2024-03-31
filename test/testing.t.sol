@@ -65,6 +65,12 @@ contract Testing is Test, StructEnumEventError {
         game.equipGearPiece(Token.IRON_SWORD, 1);
 
         game.gatherResource(Resource.NORMAL_TREE, Token.IRON_HATCHET, 1);
+        vm.warp(block.timestamp + 2000);
+
+
+
+        //game.consumeItem(Token.STRENGTH_POTION, 1);
+
 
         vm.stopPrank();
     }
