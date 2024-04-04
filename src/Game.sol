@@ -9,34 +9,45 @@ import {IEquipmentVault} from "./IEquipmentVault.sol";
 import {Calculate} from "./Calculate.sol";
 import {StructEnumEventError} from "./StructEnumEventError.sol";
 
-// Contract that allows minting of tokens and actions from the player
+// Contains all the logic for the game.
 contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
 
     uint256 private uID;
+    uint256 private characterSalePrice;
+    
     address private funding;
     address private equipmentVault;
-    uint256 private characterSalePrice;
-    uint256 immutable MAX_CHARACTER_PRICE = 5e18;
-    uint8 immutable TELEPORT_TIME = 5; // 5 seconds
-    uint8 immutable INN_PRICE = 30; 
+    uint64 immutable MAX_CHARACTER_PRICE = 5e18;
+    uint8 immutable INN_PRICE = 30;
+    uint16 immutable ONE_HOUR = 3600;
+    uint16 immutable PERCENTAGE = 10000;
     
     mapping(uint8 => uint32) private xpTable; // Level --> total XP required for that level  
     
     mapping(Location => Coordinates) private coordinates; // Location --> (X,Y) coordinates
 
-    mapping(Location => bool) private teleportLocation; // Location --> Valid teleport location?
     mapping(Location => bool) private shopLocation; // Location --> Store exists here?
     mapping(Location => bool) private innLocation; // Location --> Inn exists here?
 
     mapping(Location => mapping(Token => bool)) private shopSellsItem; // Does the shop sell this item?
     mapping(Location => mapping(Resource => bool)) private areaHasResource; // Does the area have this resource?
+    mapping(Location => mapping(Skill => bool)) private validCraftingArea; // Does this Location allow a specific crafting skill to be done?
 
     mapping(Token => PriceInfo) private itemPrice; // Item --> Buy and sell price in gold coins.
-    mapping(Token => ItemInfo) private itemInfo; // Item --> Item Info (for consumables)
     mapping(Token => GearInfo) private gearInfo; // Item --> Gear Info (for equipment)
+    mapping(Token => ConsumableInfo) private consumableInfo; // item --> consumable info
     mapping(Token => ToolInfo) private toolInfo; // Item --> Tool Info (for skilling tools)
+    mapping(Token => CraftingInfo) private craftingInfo; // Item --> Crafting Info (for crafting any output product)
+    mapping(Token => Element) private element; // (Staff/Wand) --> element type.
     mapping(Resource => ResourceInfo) private resourceInfo; // Resource --> Resource Info
     
+    mapping(Stat => int16) private innBuffValues; // buff values for sleeping at an inn.
+    mapping(BuffSpell => SpellInfo) private buffSpellInfo; // Spell buff -> it's info
+    mapping(BuffSpell => BuffSpellEffects) private buffSpellEffects; // Spell buff --> it's effects
+    mapping(CombatSpell => SpellInfo) private combatSpellInfo; // combat spell -> it's info
+    mapping(CombatSpell => CombatSpellEffects) private combatSpellEffects; // combat spell -> it's effects
+    mapping(TeleportSpell => TeleportSpellInfo) private teleportSpellInfo; // tele spell -> all it's info+location
+
     mapping(address => mapping(uint256 => bool)) private ownsCharacter; // Does this address own this character (uID)?
 
     mapping(uint256 => Token) private charToken; // Token of this character (ALICE or BOB).
@@ -44,11 +55,13 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
     mapping(uint256 => Location) private charLocation; // current location of this character.
     mapping(uint256 => mapping(Skill => ProficiencyInfo)) private charSkill; // char --> skill --> proficiency info
     mapping(uint256 => mapping(Attribute => ProficiencyInfo)) private charAttribute; // char --> attr --> proficiency info
-    mapping(uint256 => Stats) private charStats; // char --> their stats 
+    mapping(uint256 => mapping(Stat => int16)) private charStat; // char --> specific stat --> value (Can change int16 into `StatInfo`)
     mapping(uint256 => mapping(GearSlot => Token)) private charEquipment; // char --> specific gear slot --> what they have equipped there
-    mapping(uint256 => mapping(BoostType => BoostInfo)) private charBoostInfo; // char --> boost info for each boost type. (is boosted & duration).
+    mapping(uint256 => BuffSpellsApplied) private charBuffSpellsApplied; // char --> magic buffs currently applied
+    mapping(uint256 => ConsumableBuffsApplied) private charConsumableBuffsApplied; // char --> consumable buffs applied
+    mapping(uint256 => uint64) private charInnBuffExpiration; // char --> inn buff expiration time.
     mapping(uint256 => uint64) private charActionFinishedAt; // char --> time when an action is finished.
-
+    
     constructor(address initialOwner, address _funding, address _equipmentVault) ERC1155("") Ownable(initialOwner) {
         funding = _funding;
         equipmentVault = _equipmentVault;
@@ -90,17 +103,29 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         charAttribute[_uID][Attribute.STRENGTH] = ProficiencyInfo(1, 0);     
         charAttribute[_uID][Attribute.AGILITY] = ProficiencyInfo(1, 0);    
         charAttribute[_uID][Attribute.INTELLIGENCE] = ProficiencyInfo(1, 0);
+        charStat[_uID][Stat.CMB_LVL] = 1;
+        charStat[_uID][Stat.MAX_HP] = 10;
+        charStat[_uID][Stat.HP] = 10;
+        charStat[_uID][Stat.ATT_POWER] = 5;
+        charStat[_uID][Stat.ATT_FREQ] = 10000;
+        charStat[_uID][Stat.ATT_RANGE] = 1;
+        charStat[_uID][Stat.DODGE_CHANCE] = 200;
+        charStat[_uID][Stat.CRIT_CHANCE] = 200;
+        charStat[_uID][Stat.CRIT_POWER] = 15000;
+        charStat[_uID][Stat.MAGIC_POWER] = 0;
+        charStat[_uID][Stat.PROTECTION] = 0;
+        charStat[_uID][Stat.ACCURACY] = 8000;
 
-        // (cmbLvl, maxHP, currentHP, attPower, attInterval, dodge, critChance, critPower, magicPower, prot, accuracy, attRange)   
-        charStats[_uID] = Stats(1, 10, 10, 1, 10000, 200, 200, 15000, 0, 0, 8000, 1);
-        
         /**
-         * We don't have to set `charEquipment`, `charBoostInfo` or `charActionFinishedAt` mappings.
-         * The default values for each mapping are the desired initial starting values for the character:
+         * To keep contract size low, the default initialization values for some  
+         * character specific mappings are sufficient and do not need to be explicitly set:
 
-         * `charEquipment[_uID][GearSlot.EACH_SLOT] = Token.NOTHING;` 
-         * `charBoostInfo[_uID][BoostType.EACH_TYPE] = BoostInfo(false, 0);`
-         * `charActionFinishedAt[_uID] = 0;`      
+         * `charEquipment`: `charEquipment[_uID][GearSlot.EACH_SLOT] = Token.NOTHING;`
+         * `charActionFinishedAt`: `charActionFinishedAt[_uID] = 0;` // immediately free to do anything upon character creation
+         * `charInffBuffExpiration`: `charInnBuffExpiration[_uID] = 0;` // 0 = expiration in the past, do not receive any temporary buffs.
+         * `charBuffSpellsApplied`: `charBuffSpellsApplied[_uID] = BuffSpellsApplied(BuffSpell.NONE, BuffSpell.NONE, 0, 0);` 
+         * `charConsumableBuffsApplied`: `charConsumableBuffsApplied[_uID] = ConsumableBuffsApplied(Token.NOTHING, Token.NOTHING, 0, 0);`
+         
          */
     }
 
@@ -118,15 +143,38 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         charLocation[_uID] = to;
     }
 
+    function castTeleport(TeleportSpell teleportSpell, uint256 _uID) external {
+        _ownsCharacterCheck(msg.sender, _uID);
+        _doingSomethingCheck(_uID);
+        
+		TeleportSpellInfo storage _teleportSpellInfo = teleportSpellInfo[teleportSpell]; // Load info about the spell
+		if (charLocation[_uID] == _teleportSpellInfo.destination) revert AlreadyThere(); // Can't teleport to where you already are
+		_burnToken(msg.sender, uint256(Token.ESSENCE_CRYSTAL), _teleportSpellInfo.numberOfEssenceCrystals); // burns crystals.
+
+		// If player does not have the right kind of staff or wand equipped, cannot teleport.
+		Token equippedWeapon = charEquipment[_uID][GearSlot.MAIN_HAND];
+		if(element[equippedWeapon] != Element.AIR || element[equippedWeapon] != Element.OMNI) revert InvalidWeaponElementType();
+
+		// Must have required level. Gain XP, level up INT if gained enough XP. Lastly, update character's location to tele destination.
+		ProficiencyInfo storage charProficiency = charAttribute[_uID][Attribute.INTELLIGENCE];
+		if (charProficiency.level < _teleportSpellInfo.requiredLevel) revert Noob(); 
+
+		charProficiency.xp += _teleportSpellInfo.xp; 
+
+		if (xpTable[charProficiency.level + 1] <= charProficiency.xp) {
+			charProficiency.level++;
+			emit AttributeLevelUp(Attribute.INTELLIGENCE, charProficiency.level);
+		}
+
+		charLocation[_uID] = _teleportSpellInfo.destination;
+	}
+
     function buyItem(Location shop, Token item, uint256 amount, uint256 _uID) external {
         _ownsCharacterCheck(msg.sender, _uID);
         _doingSomethingCheck(_uID);
         _atLocationCheck(shop, _uID);
         if(!shopSellsItem[shop][item]) revert NotInStock();
-        uint256 goldCoinBalance = balanceOf(msg.sender, uint256(Token.GOLD_COINS)); 
-        uint256 pricePerItem = itemPrice[item].buyPrice; 
-        uint256 totalPrice = pricePerItem * amount;
-        if (goldCoinBalance < totalPrice) revert NotEnoughGold();
+        uint256 totalPrice = itemPrice[item].buyPrice * amount;
         _burnToken(msg.sender, uint256(Token.GOLD_COINS), totalPrice); 
         _mintToken(msg.sender, uint256(item), amount);
     }
@@ -136,46 +184,10 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         _doingSomethingCheck(_uID);
         _atLocationCheck(shop, _uID);
         if (!shopLocation[shop]) revert NotShopLocation();
-        uint256 pricePerItem = itemPrice[item].sellPrice;
-        uint256 totalPrice = pricePerItem * amount;
-        _burnToken(msg.sender, uint256(item), amount);
+        uint256 totalPrice = itemPrice[item].sellPrice * amount;
+        _burnToken(msg.sender, uint256(item), amount); 
         _mintToken(msg.sender, uint256(Token.GOLD_COINS), totalPrice);
     }
-
-/*
-    function consumeItem(Token item, uint256 _uID) external {
-        _ownsCharacterCheck(msg.sender, _uID);
-        _doingSomethingCheck(_uID);
-        
-        ItemInfo storage _itemInfo = itemInfo[item];
-        if (!_itemInfo.consumable) revert CannotConsume();
-        
-        BoostInfo storage _charBoostInfo = charBoostInfo[_uID][_itemInfo.boostType];
-        if (_charBoostInfo.isBoosted) revert AlreadyBoosted();
-
-        if (_itemInfo.temporary) {
-            _charBoostInfo.isBoosted = true;
-            _charBoostInfo.duration = uint64(block.timestamp) + _itemInfo.duration;
-        }
-
-        // Might be able to match the stat changes to the boost type? Save some space potentially.
-        // something like... `_itemInfo[boostType].hp` for the HP amount of the boost?
-        // This would fail for an item that has multiple stats that it can boost at once though?
-        Stats storage stats = charStats[_uID];
-        stats.currentHP += _itemInfo.hp;
-        stats.attackPower += _itemInfo.attackPower; 
-        stats.attackInterval += _itemInfo.attackInterval; 
-        stats.dodgeChance += _itemInfo.dodgeChance; 
-        stats.critChance += _itemInfo.critChance; 
-        stats.critPower += _itemInfo.critPower; 
-        stats.magicPower += _itemInfo.magicPower; 
-        stats.protection += _itemInfo.protection; 
-        stats.accuracy += _itemInfo.accuracy; 
-
-        if (stats.currentHP > stats.maxHP) stats.currentHP = stats.maxHP; // This is the only stat that could go above a maximum.
-        _burnToken(msg.sender, uint256(item), 1);
-    }
-*/
 
     function equipGearPiece(Token newGearPiece, uint256 _uID) external {
         _ownsCharacterCheck(msg.sender, _uID);
@@ -185,7 +197,7 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         IEquipmentVault(equipmentVault).transferToVault(msg.sender, uint256(newGearPiece), 1, "");
 
         GearInfo storage newGearInfo = gearInfo[newGearPiece]; 
-        if (newGearInfo.slot == GearSlot.NULL) revert NotGear(); // Handles Token.NOTHING and any other uninitialized Tokens.
+        if (newGearInfo.slot == GearSlot.NULL) revert NotGear(); // Handles all uninitialized gear Tokens.
 
         ProficiencyInfo storage strengthInfo = charAttribute[_uID][Attribute.STRENGTH];
         ProficiencyInfo storage agilityInfo = charAttribute[_uID][Attribute.AGILITY];
@@ -221,16 +233,15 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
 		// And finally, we explicitly equip the newGear to it's corresponding gear slot.
 		charEquipment[_uID][newGearInfo.slot] = newGearPiece;
 
-        Stats storage stats = charStats[_uID];
-        stats.attackPower += newGearInfo.attackPower; 
-        stats.attackInterval += newGearInfo.attackInterval; 
-        stats.dodgeChance += newGearInfo.dodgeChance; 
-        stats.critChance += newGearInfo.critChance; 
-        stats.critPower += newGearInfo.critPower; 
-        stats.magicPower += newGearInfo.magicPower; 
-        stats.protection += newGearInfo.protection; 
-        stats.accuracy += newGearInfo.accuracy; 
-        stats.attackRange += newGearInfo.attackRange;
+        charStat[_uID][Stat.ATT_POWER] += newGearInfo.attPower;
+        charStat[_uID][Stat.ATT_FREQ] += newGearInfo.attFreq;
+        charStat[_uID][Stat.ATT_RANGE] += newGearInfo.attRange;
+        charStat[_uID][Stat.DODGE_CHANCE] += newGearInfo.dodgeChance; 
+        charStat[_uID][Stat.CRIT_CHANCE] += newGearInfo.critChance;
+        charStat[_uID][Stat.CRIT_POWER] += newGearInfo.critPower;
+        charStat[_uID][Stat.MAGIC_POWER] += newGearInfo.magicPower;
+        charStat[_uID][Stat.PROTECTION] += newGearInfo.protection;
+        charStat[_uID][Stat.ACCURACY] += newGearInfo.accuracy; 
     }
 
     function unequipGearPiece(Token requestedGearPiece, uint256 _uID) public {
@@ -247,16 +258,15 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         
         IEquipmentVault(equipmentVault).transferFromVault(msg.sender, uint256(requestedGearPiece), 1, "");
 
-        Stats storage stats = charStats[_uID];
-        stats.attackPower -= requestedGearInfo.attackPower; 
-        stats.attackInterval -= requestedGearInfo.attackInterval; 
-        stats.dodgeChance -= requestedGearInfo.dodgeChance; 
-        stats.critChance -= requestedGearInfo.critChance; 
-        stats.critPower -= requestedGearInfo.critPower; 
-        stats.magicPower -= requestedGearInfo.magicPower; 
-        stats.protection -= requestedGearInfo.protection; 
-        stats.accuracy -= requestedGearInfo.accuracy; 
-        stats.attackRange -= requestedGearInfo.attackRange; 
+        charStat[_uID][Stat.ATT_POWER] -= requestedGearInfo.attPower;
+        charStat[_uID][Stat.ATT_FREQ] -= requestedGearInfo.attFreq;
+        charStat[_uID][Stat.ATT_RANGE] -= requestedGearInfo.attRange;
+        charStat[_uID][Stat.DODGE_CHANCE] -= requestedGearInfo.dodgeChance; 
+        charStat[_uID][Stat.CRIT_CHANCE] -= requestedGearInfo.critChance;
+        charStat[_uID][Stat.CRIT_POWER] -= requestedGearInfo.critPower;
+        charStat[_uID][Stat.MAGIC_POWER] -= requestedGearInfo.magicPower;
+        charStat[_uID][Stat.PROTECTION] -= requestedGearInfo.protection;
+        charStat[_uID][Stat.ACCURACY] -= requestedGearInfo.accuracy; 
     }
 
     function gatherResource(Resource resource, Token tool, uint256 _uID) external {
@@ -269,54 +279,147 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
 
         ResourceInfo storage _resourceInfo = resourceInfo[resource];
         ToolInfo storage _toolInfo = toolInfo[tool];
-        ProficiencyInfo storage proficiencyInfo = charSkill[_uID][_toolInfo.skill];
+        ProficiencyInfo storage charProficiency = charSkill[_uID][_toolInfo.skill];
         if (_toolInfo.skill != Skill.MINING && _toolInfo.skill != Skill.WOODCUTTING && _toolInfo.skill != Skill.FISHING) revert NotTool();
         if (_toolInfo.skill != _resourceInfo.skill) revert WrongToolForTheJob(); 
-        if (proficiencyInfo.level < _toolInfo.requiredLevel || proficiencyInfo.level < _resourceInfo.requiredLevel) revert Noob();
+        if (charProficiency.level < _toolInfo.requiredLevel || charProficiency.level < _resourceInfo.requiredLevel) revert Noob();
 
-        uint16 timeToGather = Calculate.resourceGatheringSpeed(_toolInfo.gatherSpeed, _resourceInfo.gatherSpeed, proficiencyInfo.level);
+        uint16 timeToGather = Calculate.resourceGatheringSpeed(_toolInfo.gatherSpeed, _resourceInfo.gatherSpeed, charProficiency.level);
         charActionFinishedAt[_uID] = uint64(block.timestamp) + timeToGather;
 
-        proficiencyInfo.xp += _resourceInfo.xp;
+        charProficiency.xp += _resourceInfo.xp;
 
-        if (xpTable[proficiencyInfo.level + 1] <= proficiencyInfo.xp) {
-                proficiencyInfo.level++;
-                emit SkillLevelUp(_toolInfo.skill, proficiencyInfo.level); 
-            }
+        // This might be modularized for `craftItem()` too, and maybe for combat level ups.
+        if (xpTable[charProficiency.level + 1] <= charProficiency.xp) {
+            charProficiency.level++;
+            emit SkillLevelUp(_toolInfo.skill, charProficiency.level); 
+        }
 
         _mintToken(msg.sender, uint256(_resourceInfo.material), 1);
     }
 
-/*
+    function craftItem(Location craftingArea, Token outputItem, uint256 _uID) external {
+        _ownsCharacterCheck(msg.sender, _uID);
+        _doingSomethingCheck(_uID);
+		_atLocationCheck(craftingArea, _uID);
+
+		CraftingInfo storage _craftingInfo = craftingInfo[outputItem];
+		ProficiencyInfo storage charProficiency = charSkill[_uID][_craftingInfo.skill];
+
+		if (!validCraftingArea[craftingArea][_craftingInfo.skill]) revert WrongCraftingLocation();
+		if (_craftingInfo.tokenOne == Token.NOTHING) revert InvalidCraftingOutput(); // Hasn't been initialized as a valid output Token crafting item.
+		if (charProficiency.level < _craftingInfo.requiredLevel) revert Noob();
+		
+		// Burn materials.
+		_burnToken(msg.sender, uint256(_craftingInfo.tokenOne), _craftingInfo.amountOne); // tokenOne always exists at this point.
+		if (_craftingInfo.tokenTwo != Token.NOTHING) _burnToken(msg.sender, uint256(_craftingInfo.tokenTwo), _craftingInfo.amountTwo);
+		if (_craftingInfo.tokenThree != Token.NOTHING) _burnToken(msg.sender, uint256(_craftingInfo.tokenThree), _craftingInfo.amountThree);
+
+		charProficiency.xp += _craftingInfo.xp; // Gain XP 
+
+        // Optional LVL up. This might be modularized for `craftItem()` too, and maybe for combat level ups and teleport level ups.
+        if (xpTable[charProficiency.level + 1] <= charProficiency.xp) {
+            charProficiency.level++;
+            emit SkillLevelUp(_craftingInfo.skill, charProficiency.level);
+        }
+		
+		charActionFinishedAt[_uID] = uint64(block.timestamp) + _craftingInfo.timeToProduce; // Adjust character's action time based on time taken
+		_mintToken(msg.sender, uint256(outputItem), _craftingInfo.amountPerOutput); // Mint the finished product to the user.
+    }
+
+    function castBuff (BuffSpell buffSpell, bool buffSlotOne, uint256 _uID) external {
+        _ownsCharacterCheck(msg.sender, _uID);
+        _doingSomethingCheck(_uID);
+        
+        SpellInfo storage _buffSpellInfo = buffSpellInfo[buffSpell];
+        BuffSpellEffects storage _buffSpellEffects = buffSpellEffects[buffSpell];
+        ProficiencyInfo storage charProficiency = charAttribute[_uID][Attribute.INTELLIGENCE];
+        Token equippedWeapon = charEquipment[_uID][GearSlot.MAIN_HAND];
+        
+        if (element[equippedWeapon] != _buffSpellInfo.element || element[equippedWeapon] != Element.OMNI) revert InvalidWeaponElementType();
+        if (charProficiency.level < _buffSpellInfo.requiredLevel) revert Noob();
+
+        BuffSpellsApplied storage charSpellBuffs = charBuffSpellsApplied[_uID];
+
+        if (buffSlotOne) {
+            charSpellBuffs.buffSpellOne = buffSpell;
+            charSpellBuffs.buffOneEndsAt = uint64(block.timestamp) + _buffSpellEffects.duration;
+        } else {
+            charSpellBuffs.buffSpellTwo = buffSpell;
+            charSpellBuffs.buffTwoEndsAt = uint64(block.timestamp) + _buffSpellEffects.duration;
+        }
+
+        // At any point, if the buff types (stat it increases) in both slots are the same, revert.
+        if (buffSpellEffects[charSpellBuffs.buffSpellOne].stat == buffSpellEffects[charSpellBuffs.buffSpellTwo].stat) revert SameBuffType();
+
+        // burn essence crystals according to the exact spell info.
+        _burnToken(msg.sender, uint256(Token.ESSENCE_CRYSTAL), _buffSpellInfo.numberOfEssenceCrystals);
+
+        // Give XP and optional level up.
+        charProficiency.xp += _buffSpellInfo.xp;
+
+        if (xpTable[charProficiency.level + 1] <= charProficiency.xp) {
+            charProficiency.level++;
+            emit AttributeLevelUp(Attribute.INTELLIGENCE, charProficiency.level);
+        }
+    }
+
+    function consumeItem(Token consumable, bool consumableSlotOne, uint256 _uID) external {
+		_ownsCharacterCheck(msg.sender, _uID);
+        _doingSomethingCheck(_uID);
+
+		ConsumableInfo storage _consumableInfo = consumableInfo[consumable];
+		if (_consumableInfo.statOne == Stat.NONE) revert NotAConsumable(); // By default, all uninitialized tokens have `Stat.CMB_LVL`.
+
+		// Can immediately gain HP if it was HP related. Do not re-add during combat though!
+		if (_consumableInfo.statOne == Stat.HP) {
+			charStat[_uID][Stat.HP] += _consumableInfo.amountOne;
+			if (charStat[_uID][Stat.HP] > charStat[_uID][Stat.MAX_HP]) charStat[_uID][Stat.HP] = charStat[_uID][Stat.MAX_HP];
+		}
+
+		ConsumableBuffsApplied storage _charConsumableBuffsApplied = charConsumableBuffsApplied[_uID];
+
+	    if (consumableSlotOne) {
+            _charConsumableBuffsApplied.consumableOne = consumable;
+            _charConsumableBuffsApplied.consumableOneEndsAt = uint64(block.timestamp) + _consumableInfo.duration;
+        } else {
+            _charConsumableBuffsApplied.consumableTwo = consumable;
+            _charConsumableBuffsApplied.consumableTwoEndsAt = uint64(block.timestamp) + _consumableInfo.duration;
+        }
+        
+		_burnToken(msg.sender, uint256(consumable), 1);
+	}
+
     function sleep(Location inn, uint256 _uID) external {
         _ownsCharacterCheck(msg.sender, _uID);
         _doingSomethingCheck(_uID);
         _atLocationCheck(inn, _uID);
-        if (!innLocation[inn]) revert NotInnLocation();
-        if (balanceOf(msg.sender, uint256(Token.GOLD_COINS)) < INN_PRICE) revert NotEnoughGold();
+		if (!innLocation[inn]) revert NotAnInn();
+        // for combat, check if this buff has expired or not. By default (0), it is expired.
+		charInnBuffExpiration[_uID] = uint64(block.timestamp) + ONE_HOUR; 
+		_burnToken(msg.sender, uint256(Token.GOLD_COINS), INN_PRICE);
+		charStat[_uID][Stat.HP] = charStat[_uID][Stat.MAX_HP]; 
+    }
 
-        // You should be able to sleep at an inn whenever you want, shouldn't have to wait 30 mins for it to wear off before sleeping again.
 
-        _burnToken(msg.sender, uint256(Token.GOLD_COINS), INN_PRICE);
 
-        Stats storage stats = charStats[_uID];
-        stats.currentHP = stats.maxHP;
-        stats.dodgeChance += 500; // +5%
-        stats.critChance += 500; // +5%
-        stats.critPower += 2500; // +25%
-        stats.accuracy += 500; // +5%
 
-        charBoostInfo[_uID][BoostType.DODGE].isBoosted = true;
-        charBoostInfo[_uID][BoostType.DODGE].duration = uint64(block.timestamp) + 600; // 10 mins
+    /*
 
-        charBoostInfo[_uID][BoostType.CRIT_CHANCE].isBoosted = true;
-        charBoostInfo[_uID][BoostType.CRIT_CHANCE].duration = uint64(block.timestamp) + 300; // 5 mins
+    function _died(uint256 _uID) internal {
+        // In both cases, no XP should be gained of course, since you didn't kill the monster.
+        charHardcore[_uID] ? _hardcoreDeath() : _normalDeath();
+    }
 
-        charBoostInfo[_uID][BoostType.CRIT_POWER].isBoosted = true;
-        charBoostInfo[_uID][BoostType.CRIT_POWER].duration = uint64(block.timestamp) + 300; // 5 mins
+    function _normalDeath() internal {
+        charLocation[_uID] = Location.LUMBRIDGE_TOWN_SQ // respawn in lumby, will still have buffs that's fine.
+    }
 
-        charBoostInfo[_uID][BoostType.ACCURACY].isBoosted = true;
-        charBoostInfo[_uID][BoostType.ACCURACY].duration = uint64(block.timestamp) + 1800; // 30 mins
+    function _hardcoreDeath() internal {
+        // This means they can never unequip their gear, and their functionality over their character and the gear that was equipped
+        // Is forever gone. They still have access to their non-gear items though.
+        ownsCharacter[msg.sender][_uID] = false;
+        // You could also burn their NFT too, but that is overkill and requies more logic in `_update()` for burning a character.
     }
 */
 
@@ -379,15 +482,78 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         toolInfo[Token.STEEL_HATCHET] = ToolInfo(Skill.WOODCUTTING, 15, 15);
         toolInfo[Token.IRON_PICKAXE] = ToolInfo(Skill.MINING, 1, 10);
 
-        // Set gear info (type, STR/AGIL/INT, attPower, attSpeed, dodge, critChance, critPower, magicPower, prot, accuracy, attackRange)
-        gearInfo[Token.IRON_SWORD] = GearInfo(GearSlot.MAIN_HAND, false, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0);
-        gearInfo[Token.RING_OF_BLOOD] = GearInfo(GearSlot.MAIN_HAND, false, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0);
-        gearInfo[Token.IRON_2H_SWORD] = GearInfo(GearSlot.MAIN_HAND, true, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0);
+        // Set gear info (type, STR/AGIL/INT, attPower, attSpeed, dodge, critChance, critPower, magicPower, prot, accuracy, attRange, enchantment)
+        gearInfo[Token.IRON_SWORD] = GearInfo(GearSlot.MAIN_HAND, false, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0, Enchantment.NONE, 0, 0);
+        gearInfo[Token.RING_OF_BLOOD] = GearInfo(GearSlot.MAIN_HAND, false, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, Enchantment.NONE, 0, 0);
+        gearInfo[Token.IRON_2H_SWORD] = GearInfo(GearSlot.MAIN_HAND, true, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0, Enchantment.NONE, 0, 0);
 
-        // Set item info for consumables (boost type, temporary, duration, hp, attPower, attInterval, dodge, critChance, critPower, magicPower, prot, accuary)
-        itemInfo[Token.HEALTH_POTION] = ItemInfo(BoostType.HP, true, false, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0);
-        itemInfo[Token.STRENGTH_POTION] = ItemInfo(BoostType.ATTACK_POWER, true, true, 600, 0, 10, 0, 0, 0, 0, 0, 0, 0);
-        itemInfo[Token.PROTECTION_POTION] = ItemInfo(BoostType.PROTECTION, true, true, 600, 0, 0, 0, 0, 0, 0, 0, 10, 0);
+        // set teleport info
+        teleportSpellInfo[TeleportSpell.TELEPORT_TO_LUMBRIDGE] = TeleportSpellInfo(Location.LUMBRIDGE_TOWN_SQ, 30, 200, 1);
+        teleportSpellInfo[TeleportSpell.TELEPORT_TO_FALADOR] = TeleportSpellInfo(Location.FALADOR_TOWN_SQ, 40, 300, 2);
+        teleportSpellInfo[TeleportSpell.TELEPORT_TO_VELRICK] = TeleportSpellInfo(Location.VELRICK_TOWN_SQ, 50, 400, 3);
+
+        // set inn buff values
+        innBuffValues[Stat.DODGE_CHANCE] = 200;
+        innBuffValues[Stat.CRIT_CHANCE] = 100;
+        innBuffValues[Stat.CRIT_POWER] = 1000;
+        innBuffValues[Stat.ACCURACY] = 200;
+
+        // Set staff and wand spell types.
+        element[Token.AIR_STAFF] = Element.AIR;
+        element[Token.WATER_STAFF] = Element.WATER;
+        element[Token.EARTH_STAFF] = Element.EARTH;
+        element[Token.FIRE_STAFF] = Element.FIRE;
+        element[Token.OMNI_STAFF] = Element.AIR;
+        element[Token.AIR_WAND] = Element.AIR;
+
+        // Set buff spell info. (spell type, req lvl, xp, num crystals).
+        buffSpellInfo[BuffSpell.STONE_SKIN] = SpellInfo(Element.EARTH, 25, 500, 3);
+        buffSpellInfo[BuffSpell.IRON_SKIN] = SpellInfo(Element.EARTH, 35, 800, 5);
+        buffSpellInfo[BuffSpell.SHADOW_SKIN] = SpellInfo(Element.WATER, 50, 1400, 8);
+        buffSpellInfo[BuffSpell.ANCIENT_RAGE] = SpellInfo(Element.FIRE, 60, 3000, 20);
+        buffSpellInfo[BuffSpell.KEEN_EYE] = SpellInfo(Element.AIR, 10, 200, 2);
+        buffSpellInfo[BuffSpell.IMBUED_SOUL] = SpellInfo(Element.WATER, 1, 100, 1);
+
+        // set buff spell effects. (Stat, duration, amount (static), percentage (dynamic)).
+        buffSpellEffects[BuffSpell.STONE_SKIN] = BuffSpellEffects(Stat.PROTECTION, 1800, 50, 0);
+        buffSpellEffects[BuffSpell.IRON_SKIN] = BuffSpellEffects(Stat.PROTECTION, 1800, 150, 0);
+        buffSpellEffects[BuffSpell.SHADOW_SKIN] = BuffSpellEffects(Stat.DODGE_CHANCE, 900, 500, 0); // 5%
+        buffSpellEffects[BuffSpell.ANCIENT_RAGE] = BuffSpellEffects(Stat.ATT_POWER, 600, 0, 2000); // 20%
+        buffSpellEffects[BuffSpell.KEEN_EYE] = BuffSpellEffects(Stat.ACCURACY, 1800, 500, 0); // 5%
+        buffSpellEffects[BuffSpell.IMBUED_SOUL] = BuffSpellEffects(Stat.MAGIC_POWER, 3600, 0, 1000); // 10%
+
+        // set item consumable effects. (stat1, stat2, amnt1, pct1, amnt2, pct2, duration)
+        consumableInfo[Token.HEALTH_POTION] = ConsumableInfo(Stat.HP, Stat.NONE, 50, 0, 0, 0, 0);
+        consumableInfo[Token.STRENGTH_POTION] = ConsumableInfo(Stat.ATT_POWER, Stat.NONE, 0, 1000, 0, 0, 900);
+        consumableInfo[Token.PROTECTION_POTION] = ConsumableInfo(Stat.PROTECTION, Stat.NONE, 20, 0, 0, 0, 900);
+        consumableInfo[Token.SALMON] = ConsumableInfo(Stat.PROTECTION, Stat.DODGE_CHANCE, 20, 0, 200, 0, 600);
+
+        // set combat spell info. (spell type, req lvl, xp, num crystals).
+        combatSpellInfo[CombatSpell.AIR_BLAST] = SpellInfo(Element.AIR, 1, 200, 1);
+        combatSpellInfo[CombatSpell.WATER_BLAST] = SpellInfo(Element.WATER, 5, 400, 1);
+        combatSpellInfo[CombatSpell.EARTH_BLAST] = SpellInfo(Element.EARTH, 10, 800, 1);
+        combatSpellInfo[CombatSpell.FIRE_BLAST] = SpellInfo(Element.FIRE, 15, 1200, 1);
+        combatSpellInfo[CombatSpell.OMNI_BLAST] = SpellInfo(Element.OMNI, 25, 3000, 3);
+
+        // set combat spell effects (attFreq, magicPower, accuracy)
+        combatSpellEffects[CombatSpell.AIR_BLAST] = CombatSpellEffects(0, 20, 0);
+        combatSpellEffects[CombatSpell.WATER_BLAST] = CombatSpellEffects(0, 50, 0);
+        combatSpellEffects[CombatSpell.EARTH_BLAST] = CombatSpellEffects(0, 90, 0);
+        combatSpellEffects[CombatSpell.FIRE_BLAST] = CombatSpellEffects(0, 160, 0);
+        combatSpellEffects[CombatSpell.OMNI_BLAST] = CombatSpellEffects(0, 250, 0);
+
+        // Set crafting info for items.. (skill, reqLvl, xp, timeToProduce, amountPerOutput, token1, token2, token3, amnt1, amnt2, amnt3)
+        craftingInfo[Token.RING_OF_BLOOD] = CraftingInfo(Skill.BLACKSMITHING, 10, 500, 30, 1, Token.GOLD_COINS, Token.IRON_INGOT, Token.NOTHING, 42, 2, 0);
+        craftingInfo[Token.IRON_INGOT] = CraftingInfo(Skill.BLACKSMITHING, 20, 100, 30, 1, Token.IRON_ORE, Token.NOTHING, Token.NOTHING, 2, 0, 0);
+
+        // Set valid crafting locations.
+        validCraftingArea[Location.L_INN][Skill.COOKING] = true;
+        validCraftingArea[Location.L_BLACKSMITH][Skill.BLACKSMITHING] = true;
+        validCraftingArea[Location.L_RANGE_SHOP][Skill.LEATHERWORKING] = true;
+        validCraftingArea[Location.L_RANGE_SHOP][Skill.WOODWORKING] = true;
+        validCraftingArea[Location.L_MAGE_SHOP][Skill.ALCHEMY] = true;
+        validCraftingArea[Location.L_MAGE_SHOP][Skill.ENCHANTING] = true;
+        validCraftingArea[Location.L_MAGE_SHOP][Skill.CLOTHWORKING] = true;
 
         // Set Experience table. (Do the rest later)
         xpTable[1] = 0;
@@ -400,11 +566,6 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         xpTable[8] = 4550; // 3750 + 800
         xpTable[9] = 5400; // 4550 + 850
         xpTable[10] = 6300; // 5400 + 900
-
-        // Set valid teleport locations. All other locations are false by default.
-        teleportLocation[Location.LUMBRIDGE_TOWN_SQ] = true;
-        teleportLocation[Location.FALADOR_TOWN_SQ] = true;
-        teleportLocation[Location.VELRICK_TOWN_SQ] = true;
     }   
 
     // ------------ HELPER FUNCTIONS ------------
@@ -464,68 +625,3 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         return super.uri(tokenId);
     }
 }
-
-
-
-
-/*
-    function craftItem() public {
-        // crafting requires `mats`, but there are two types.
-
-        // 1. actually consumable mats that will get burned (ex: 5 steel bars or 3 normal_wood)
-        // 2. needles, hammers, knives, chisel, etc. These are secondary tools that you'll need. (Match them with their skill type too!).
-
-
-        // At the blacksmith, you can 1. do smithing stuff like smelt ore, and turn bars into gear (as long as you have a hammer). 
-        // AND it acts as a shop location as well, to trade with the blacksmith. So we set the location to `true` for shop and for this crafting stuff.
-    }
-
-    function fightEnemy(Enemy enemy, uint256 _uID) public {
-        // Check stat boosts. If expired... we need a way to decrement that stats back down based on what was consumed.
-        // Fight the enemy (monster, boss, etc.)
-        // Gain XP and loot
-        // If XP gained yields a level up, then level up.
-        // If he dies, he `_died()`.
-    }
-
-    function _died(address user) internal {
-        CharacterInfo storage charInfo = characterInfo[user];
-        charInfo.hardcore ? _hardcoreDeath() : _normalDeath();
-    }
-
-    function _normalDeath() internal {
-        // respawn in lumby in tact.
-    }
-
-    function _hardcoreDeath() internal {
-        // burn their NFT and set all their mappings and structs to defaults.
-        // Get user's character info, if they have a character, burn it, and reset the mapping. _burnToken(user, tokenId, 1);
-        // require that the owner mapping is now 0 (owns nothing), and do balanceOf(NFT) to verify it doesnt exist. Require that.
-    }
-*/
-
-
-/*
-    function teleport(Location to, uint256 _uID) external {
-        _ownsCharacterCheck(msg.sender, _uID);
-        CharacterInfo storage charInfo = characterInfo[_uID];
-        if (!teleportLocation[to]) revert NotTeleportLocation();
-        if (charInfo.location == to) revert AlreadyThere();
-        if (charInfo.actionFinishedTime > block.timestamp) revert StillDoingAction();
-
-        //uint8 intelligenceLevel = charInfo.attributes.intelligenceInfo.level; // players current INT level
-        //uint32 intelligenceXP = charInfo.attributes.intelligenceInfo.xp; // players current INT xp.
-
-        // For the spell, we need information about the spell 1. It's runes (Tokens) 2. It's level requirement to cast.
-        // Maybe even a mapping from location to the spell mapping.
-
-        //if (intelligenceLevel < _spellInfo.level) revert Noob(); // require INT level high enough for specific spell.
-        //if (balanceOf(msg.sender, uint256(_spellInfo.RuneOne)) == 0); // require player has enough runes to teleport to `to` location.
-        //if (balanceOf(msg.sender, uint256(_spellInfo.RuneTwo)) == 0); // require player has enough runes to teleport to `to` location.
-
-        // decrement the runes here, via _burnBatch(); or _burn();
-        // gain INT experience based on which spell was cast. If enough XP, gain a level.
-        charInfo.actionFinishedTime = uint64(block.timestamp) + TELEPORT_TIME; 
-        charInfo.location = to; 
-    }
-*/
