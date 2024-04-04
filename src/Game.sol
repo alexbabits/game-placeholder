@@ -47,6 +47,7 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
     mapping(CombatSpell => SpellInfo) private combatSpellInfo; // combat spell -> it's info
     mapping(CombatSpell => CombatSpellEffects) private combatSpellEffects; // combat spell -> it's effects
     mapping(TeleportSpell => TeleportSpellInfo) private teleportSpellInfo; // tele spell -> all it's info+location
+    mapping(WeaponType => WeaponXPInfo) private weaponXPInfo; // weapons type to the XP it gives for combat.
 
     mapping(address => mapping(uint256 => bool)) private ownsCharacter; // Does this address own this character (uID)?
 
@@ -61,6 +62,7 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
     mapping(uint256 => ConsumableBuffsApplied) private charConsumableBuffsApplied; // char --> consumable buffs applied
     mapping(uint256 => uint64) private charInnBuffExpiration; // char --> inn buff expiration time.
     mapping(uint256 => uint64) private charActionFinishedAt; // char --> time when an action is finished.
+    mapping(uint256 => CombatStyle) private charCombatStyle; // char --> combat style
     
     constructor(address initialOwner, address _funding, address _equipmentVault) ERC1155("") Ownable(initialOwner) {
         funding = _funding;
@@ -125,6 +127,7 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
          * `charInffBuffExpiration`: `charInnBuffExpiration[_uID] = 0;` // 0 = expiration in the past, do not receive any temporary buffs.
          * `charBuffSpellsApplied`: `charBuffSpellsApplied[_uID] = BuffSpellsApplied(BuffSpell.NONE, BuffSpell.NONE, 0, 0);` 
          * `charConsumableBuffsApplied`: `charConsumableBuffsApplied[_uID] = ConsumableBuffsApplied(Token.NOTHING, Token.NOTHING, 0, 0);`
+         * `charCombatStyle`: `charCombatStyle[_uID] = CombatStyle.NONE;`
          
          */
     }
@@ -189,49 +192,51 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         _mintToken(msg.sender, uint256(Token.GOLD_COINS), totalPrice);
     }
 
-    function equipGearPiece(Token newGearPiece, uint256 _uID) external {
+    function equipGearPiece(Token newGearPiece, bool ringSlotOne, uint256 _uID) external {
         _ownsCharacterCheck(msg.sender, _uID);
         _doingSomethingCheck(_uID);
         if (balanceOf(msg.sender, uint256(newGearPiece)) == 0) revert DoNotOwnItem(); 
+        // If player equips an identical gear piece, they still unequip the old one and equip the new one.
+        GearInfo storage newGearInfo = gearInfo[newGearPiece]; 
+        if (newGearInfo.slotOne == GearSlot.NONE) revert NotGear();
+        if (
+            charAttribute[_uID][Attribute.STRENGTH].level < newGearInfo.requiredStrengthLevel || 
+            charAttribute[_uID][Attribute.AGILITY].level < newGearInfo.requiredAgilityLevel ||
+            charAttribute[_uID][Attribute.INTELLIGENCE].level < newGearInfo.requiredIntelligenceLevel
+        ) revert Noob(); 
 
         IEquipmentVault(equipmentVault).transferToVault(msg.sender, uint256(newGearPiece), 1, "");
 
-        GearInfo storage newGearInfo = gearInfo[newGearPiece]; 
-        if (newGearInfo.slot == GearSlot.NULL) revert NotGear(); // Handles all uninitialized gear Tokens.
+        Token oldMainHand = charEquipment[_uID][GearSlot.MAIN_HAND];
+	    Token oldOffHand = charEquipment[_uID][GearSlot.OFF_HAND];
+	    
+        // Player wants to equip a 2H weapon. Unequip mainHand and/or offHand, then equip 2H weapon.
+        // 2H weapon: slotOne = GearSlot.MAIN_HAND. slotTwo = GearSlot.OFF_HAND
+        if (newGearInfo.slotTwo == GearSlot.OFF_HAND) {
+            if (oldMainHand != Token.NOTHING) unequipGearPiece(oldMainHand, GearSlot.MAIN_HAND, _uID);
+            if (oldOffHand != Token.NOTHING) unequipGearPiece(oldOffHand, GearSlot.OFF_HAND, _uID);
+            charEquipment[_uID][GearSlot.MAIN_HAND] = newGearPiece;
 
-        ProficiencyInfo storage strengthInfo = charAttribute[_uID][Attribute.STRENGTH];
-        ProficiencyInfo storage agilityInfo = charAttribute[_uID][Attribute.AGILITY];
-        ProficiencyInfo storage intelligenceInfo = charAttribute[_uID][Attribute.INTELLIGENCE];
+		// Player wants to equip an offHand and currently has a 2H equipped. Unequip the 2H and equip the offHand.
+        } else if (newGearInfo.slotOne == GearSlot.OFF_HAND && gearInfo[oldMainHand].slotTwo == GearSlot.OFF_HAND){
+       	    unequipGearPiece(oldMainHand, GearSlot.MAIN_HAND, _uID);
+	        charEquipment[_uID][GearSlot.OFF_HAND] = newGearPiece; 
 
-        if (
-            strengthInfo.level < newGearInfo.requiredStrengthLevel || 
-            agilityInfo.level < newGearInfo.requiredAgilityLevel ||
-            intelligenceInfo.level < newGearInfo.requiredIntelligenceLevel
-        ) revert Noob(); 
+		// Player wants to equip a ring. Find the desired slot, unequip oldRing if needed, and equip the new ring.
+        // Ring: slotOne = GearSlot.RING_ONE. slotTwo = GearSlot.RING_TWO
+        } else if (newGearInfo.slotOne == GearSlot.RING_ONE) {
+			GearSlot desiredSlot = ringSlotOne ? GearSlot.RING_ONE : GearSlot.RING_TWO;
+			Token oldRing = charEquipment[_uID][desiredSlot];
+			if (oldRing != Token.NOTHING) unequipGearPiece(oldRing, desiredSlot, _uID);
+			charEquipment[_uID][desiredSlot] = newGearPiece;
 
-		Token oldGearPieceSlotMatch = charEquipment[_uID][newGearInfo.slot];
-		Token oldGearPieceMainHand = charEquipment[_uID][GearSlot.MAIN_HAND];
-		Token oldGearPieceOffHand = charEquipment[_uID][GearSlot.OFF_HAND];
-		
-		GearInfo storage oldGearPieceMainHandInfo = gearInfo[oldGearPieceMainHand];
-
-        // Can't equip an item you already have equipped
-		if (oldGearPieceSlotMatch == newGearPiece) revert AlreadyEquipped();
-		
-		// Handles all cases for when we want to equip a 2H
-		if (newGearInfo.twoHand) {
-			if (oldGearPieceMainHand != Token.NOTHING) unequipGearPiece(oldGearPieceMainHand, _uID);
-			if (oldGearPieceOffHand != Token.NOTHING) unequipGearPiece(oldGearPieceOffHand, _uID);
+		// In all other cases we match the gear slot, unequip the gear if needed, and equip the new gear piece.
+        // Everything else: slotOne = GearSlot.(MAIN_HAND, OFF_HAND, AMULET, HELMET, ...). slotTwo = GearSlot.NONE
+		} else {
+			Token oldSlotMatch = charEquipment[_uID][newGearInfo.slotOne];
+			if (oldSlotMatch != Token.NOTHING) unequipGearPiece(oldSlotMatch, newGearInfo.slotOne, _uID);
+			charEquipment[_uID][newGearInfo.slotOne] = newGearPiece; 
 		}
-
-		// If we want to equip an off hand, and currently have equipped a 2H, we must unequip the 2H.
-		if (newGearInfo.slot == GearSlot.OFF_HAND && oldGearPieceMainHandInfo.twoHand) unequipGearPiece(oldGearPieceMainHand, _uID);
-
-		// In all other cases, we can just unequip the matching piece.
-		if (oldGearPieceSlotMatch != Token.NOTHING) unequipGearPiece(oldGearPieceSlotMatch, _uID);
-
-		// And finally, we explicitly equip the newGear to it's corresponding gear slot.
-		charEquipment[_uID][newGearInfo.slot] = newGearPiece;
 
         charStat[_uID][Stat.ATT_POWER] += newGearInfo.attPower;
         charStat[_uID][Stat.ATT_FREQ] += newGearInfo.attFreq;
@@ -244,20 +249,14 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         charStat[_uID][Stat.ACCURACY] += newGearInfo.accuracy; 
     }
 
-    function unequipGearPiece(Token requestedGearPiece, uint256 _uID) public {
+    function unequipGearPiece(Token requestedGearPiece, GearSlot slot, uint256 _uID) public {
         _ownsCharacterCheck(msg.sender, _uID);
         _doingSomethingCheck(_uID);
         if (requestedGearPiece == Token.NOTHING) revert CannotUnequipNothing();
+        if (charEquipment[_uID][slot] != requestedGearPiece) revert ItemNotEquipped();
+        charEquipment[_uID][slot] = Token.NOTHING;
         
         GearInfo storage requestedGearInfo = gearInfo[requestedGearPiece];
-
-        Token currentGear = charEquipment[_uID][requestedGearInfo.slot];
-        if (currentGear != requestedGearPiece) revert ItemNotEquipped();
-
-        charEquipment[_uID][requestedGearInfo.slot] = Token.NOTHING;
-        
-        IEquipmentVault(equipmentVault).transferFromVault(msg.sender, uint256(requestedGearPiece), 1, "");
-
         charStat[_uID][Stat.ATT_POWER] -= requestedGearInfo.attPower;
         charStat[_uID][Stat.ATT_FREQ] -= requestedGearInfo.attFreq;
         charStat[_uID][Stat.ATT_RANGE] -= requestedGearInfo.attRange;
@@ -267,6 +266,8 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         charStat[_uID][Stat.MAGIC_POWER] -= requestedGearInfo.magicPower;
         charStat[_uID][Stat.PROTECTION] -= requestedGearInfo.protection;
         charStat[_uID][Stat.ACCURACY] -= requestedGearInfo.accuracy; 
+
+        IEquipmentVault(equipmentVault).transferFromVault(msg.sender, uint256(requestedGearPiece), 1, "");
     }
 
     function gatherResource(Resource resource, Token tool, uint256 _uID) external {
@@ -401,7 +402,11 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
 		charStat[_uID][Stat.HP] = charStat[_uID][Stat.MAX_HP]; 
     }
 
-
+    function chooseCombatStyle(CombatStyle _combatStyle, uint256 _uID) external {
+        _ownsCharacterCheck(msg.sender, _uID);
+        _doingSomethingCheck(_uID);
+        charCombatStyle[_uID] = _combatStyle;
+    }
 
 
     /*
@@ -418,8 +423,9 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
     function _hardcoreDeath() internal {
         // This means they can never unequip their gear, and their functionality over their character and the gear that was equipped
         // Is forever gone. They still have access to their non-gear items though.
-        ownsCharacter[msg.sender][_uID] = false;
         // You could also burn their NFT too, but that is overkill and requies more logic in `_update()` for burning a character.
+        // They still technically own the NFT on chain (because balance will be 1), but cannot transfer it or play with it.
+        ownsCharacter[msg.sender][_uID] = false;
     }
 */
 
@@ -482,10 +488,17 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         toolInfo[Token.STEEL_HATCHET] = ToolInfo(Skill.WOODCUTTING, 15, 15);
         toolInfo[Token.IRON_PICKAXE] = ToolInfo(Skill.MINING, 1, 10);
 
-        // Set gear info (type, STR/AGIL/INT, attPower, attSpeed, dodge, critChance, critPower, magicPower, prot, accuracy, attRange, enchantment)
-        gearInfo[Token.IRON_SWORD] = GearInfo(GearSlot.MAIN_HAND, false, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0, Enchantment.NONE, 0, 0);
-        gearInfo[Token.RING_OF_BLOOD] = GearInfo(GearSlot.MAIN_HAND, false, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, Enchantment.NONE, 0, 0);
-        gearInfo[Token.IRON_2H_SWORD] = GearInfo(GearSlot.MAIN_HAND, true, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0, Enchantment.NONE, 0, 0);
+        // Set gear info (slotOne, slotTwo, weapon type, enchantment, STR/AGIL/INT ...
+        // (... attPower, attSpeed, dodge, critChance, critPower, magicPower, prot, accuracy, attRange, enchant pct, enchant amnt)
+        // Elemental enchantments have no amnt or pct.
+        gearInfo[Token.IRON_SWORD] = GearInfo(
+            GearSlot.MAIN_HAND, GearSlot.NONE, WeaponType.SWORD, Enchantment.NONE, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0, 0, 0);
+
+        gearInfo[Token.RING_OF_BLOOD] = GearInfo(
+            GearSlot.RING_ONE, GearSlot.RING_TWO, WeaponType.NONE, Enchantment.LIFE_LEECH, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 10, 0);
+
+        gearInfo[Token.IRON_2H_SWORD] = GearInfo(
+            GearSlot.MAIN_HAND, GearSlot.OFF_HAND, WeaponType.SWORD, Enchantment.NONE, 1, 0, 0, 10, 500, 0, 100, 1000, 0, 0, 1000, 0, 0, 0);
 
         // set teleport info
         teleportSpellInfo[TeleportSpell.TELEPORT_TO_LUMBRIDGE] = TeleportSpellInfo(Location.LUMBRIDGE_TOWN_SQ, 30, 200, 1);
@@ -542,9 +555,29 @@ contract Game is ERC1155, ERC1155URIStorage, Ownable, StructEnumEventError {
         combatSpellEffects[CombatSpell.FIRE_BLAST] = CombatSpellEffects(0, 160, 0);
         combatSpellEffects[CombatSpell.OMNI_BLAST] = CombatSpellEffects(0, 250, 0);
 
-        // Set crafting info for items.. (skill, reqLvl, xp, timeToProduce, amountPerOutput, token1, token2, token3, amnt1, amnt2, amnt3)
-        craftingInfo[Token.RING_OF_BLOOD] = CraftingInfo(Skill.BLACKSMITHING, 10, 500, 30, 1, Token.GOLD_COINS, Token.IRON_INGOT, Token.NOTHING, 42, 2, 0);
-        craftingInfo[Token.IRON_INGOT] = CraftingInfo(Skill.BLACKSMITHING, 20, 100, 30, 1, Token.IRON_ORE, Token.NOTHING, Token.NOTHING, 2, 0, 0);
+        // Set weapon XP info based on the weapon type. (STR, AGI, INT)
+        weaponXPInfo[WeaponType.SWORD] = WeaponXPInfo(100, 0, 0);
+        weaponXPInfo[WeaponType.AXE] = WeaponXPInfo(100, 0, 0);
+        weaponXPInfo[WeaponType.BLUNT] = WeaponXPInfo(100, 0, 0);
+        weaponXPInfo[WeaponType.POLEARM] = WeaponXPInfo(50, 50, 0);
+        weaponXPInfo[WeaponType.DAGGER] = WeaponXPInfo(0, 100, 0);
+        weaponXPInfo[WeaponType.CURVED_SWORD] = WeaponXPInfo(0, 100, 0);
+        weaponXPInfo[WeaponType.THROWN] = WeaponXPInfo(0, 100, 0);
+        weaponXPInfo[WeaponType.SHORT_BOW] = WeaponXPInfo(0, 100, 0);
+        weaponXPInfo[WeaponType.LONG_BOW] = WeaponXPInfo(0, 100, 0);
+        weaponXPInfo[WeaponType.CROSS_BOW] = WeaponXPInfo(0, 100, 0);
+        weaponXPInfo[WeaponType.WAND] = WeaponXPInfo(0, 0, 100);
+        weaponXPInfo[WeaponType.STAFF] = WeaponXPInfo(0, 0, 100);
+
+        // Set crafting info for items. (skill, reqLvl, xp, timeToProduce, amountPerOutput, token1, token2, token3, amnt1, amnt2, amnt3)
+        craftingInfo[Token.IRON_SWORD] = CraftingInfo(
+            Skill.BLACKSMITHING, 15, 500, 30, 1, Token.GOLD_COINS, Token.IRON_INGOT, Token.NOTHING, 42, 2, 0);
+
+        craftingInfo[Token.IRON_INGOT] = CraftingInfo(
+            Skill.BLACKSMITHING, 10, 100, 30, 1, Token.IRON_ORE, Token.NOTHING, Token.NOTHING, 2, 0, 0);
+
+        craftingInfo[Token.IRON_SWORD_OF_FIRE] = CraftingInfo(
+            Skill.ENCHANTING, 10, 500, 10, 1, Token.ESSENCE_CRYSTAL, Token.FIRE_ORB, Token.NOTHING, 5, 1, 0);
 
         // Set valid crafting locations.
         validCraftingArea[Location.L_INN][Skill.COOKING] = true;

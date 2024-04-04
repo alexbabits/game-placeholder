@@ -60,14 +60,12 @@ contract Testing is Test, StructEnumEventError {
         vm.expectRevert();
         game.sellItem(Location.FOREST_ONE, Token.IRON_SWORD, 1, 1);
 
-        game.equipGearPiece(Token.IRON_SWORD, 1);
-        game.unequipGearPiece(Token.IRON_SWORD, 1);
-        game.equipGearPiece(Token.IRON_SWORD, 1);
+        game.equipGearPiece(Token.IRON_SWORD, false, 1);
+        game.unequipGearPiece(Token.IRON_SWORD, GearSlot.MAIN_HAND, 1);
+        game.equipGearPiece(Token.IRON_SWORD, false, 1);
 
         game.gatherResource(Resource.NORMAL_TREE, Token.IRON_HATCHET, 1);
         vm.warp(block.timestamp + 2000);
-
-
 
         //game.consumeItem(Token.STRENGTH_POTION, 1);
 

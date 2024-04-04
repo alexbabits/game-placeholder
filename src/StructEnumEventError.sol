@@ -4,8 +4,10 @@ pragma solidity ^0.8.20;
 abstract contract StructEnumEventError {
 
     struct GearInfo {
-        GearSlot slot;
-        bool twoHand; // Does it require both mainHand and offHand gear slot to equip?
+        GearSlot slotOne;
+        GearSlot slotTwo;
+        WeaponType weaponType;
+        Enchantment enchantment;
         uint8 requiredStrengthLevel;
         uint8 requiredAgilityLevel;
         uint8 requiredIntelligenceLevel;
@@ -18,9 +20,14 @@ abstract contract StructEnumEventError {
         int16 protection; // gained from armor
         int16 accuracy; // for magic, bows, and melee
         int16 attRange; // maximum attack distance
-        Enchantment enchantment;
-        int16 enchantAmount;
-        int16 enchantPercent;
+        int16 enchantPercent; // pct based
+        int16 enchantAmount; // amnt based
+    }
+
+    struct WeaponXPInfo {
+        uint8 strengthRate;
+        uint8 agilityRate;
+        uint8 intelligenceRate;
     }
 
     struct TeleportSpellInfo {
@@ -122,14 +129,14 @@ abstract contract StructEnumEventError {
     enum Skill {MINING, BLACKSMITHING, WOODCUTTING, WOODWORKING, FISHING, COOKING, LEATHERWORKING, CLOTHWORKING, ALCHEMY, ENCHANTING}
     enum Attribute {VITALITY, STRENGTH, AGILITY, INTELLIGENCE}
     enum Stat {NONE, CMB_LVL, MAX_HP, HP, ATT_POWER, ATT_FREQ, ATT_RANGE, DODGE_CHANCE, CRIT_CHANCE, CRIT_POWER, MAGIC_POWER, PROTECTION, ACCURACY}
-    enum GearSlot {NULL, MAIN_HAND, OFF_HAND, HEAD, CHEST, LEGS, GLOVES, BOOTS, CLOAK, RING_ONE, RING_TWO, AMULET}
-
-    enum Enchantment {NONE, AIR, WATER, EARTH, FIRE, OMNI, LIFE_LEECH, ATT_POWER, CRIT_CHANCE, CRIT_POWER, MAGIC_POWER, ACCURACY}
-
+    enum GearSlot {NONE, MAIN_HAND, OFF_HAND, HEAD, CHEST, LEGS, GLOVES, BOOTS, CLOAK, RING_ONE, RING_TWO, AMULET}
     enum BuffSpell {NONE, STONE_SKIN, IRON_SKIN, SHADOW_SKIN, ANCIENT_RAGE, KEEN_EYE, IMBUED_SOUL}
     enum TeleportSpell {TELEPORT_TO_LUMBRIDGE, TELEPORT_TO_FALADOR, TELEPORT_TO_VELRICK}
     enum CombatSpell {AIR_BLAST, WATER_BLAST, EARTH_BLAST, FIRE_BLAST, OMNI_BLAST}
     enum Element {NONE, AIR, WATER, EARTH, FIRE, OMNI} 
+    enum WeaponType {NONE, SWORD, AXE, DAGGER, CURVED_SWORD, BLUNT, POLEARM, THROWN, SHORT_BOW, LONG_BOW, CROSS_BOW, WAND, STAFF}
+    enum Enchantment {NONE, AIR, WATER, EARTH, FIRE, LIFE_LEECH, ATT_POWER, ATT_FREQ, DODGE_CHANCE, CRIT_CHANCE, CRIT_POWER, MAGIC_POWER, PROTECTION, ACCURACY}
+    enum CombatStyle {NONE, BARBARIC, DEXTEROUS, MEDITATIVE}
 
     enum Resource {
         NORMAL_TREE, OAK_TREE, WILLOW_TREE, MAPLE_TREE, YEW_TREE, MAGIC_TREE,
@@ -174,7 +181,9 @@ abstract contract StructEnumEventError {
         ENHANCED_EARTH_STAFF, // 31 (not implemented URI yet)
         ENHANCED_AIR_STAFF, // 32 (not implemented URI yet)
         AIR_WAND, // 33 (not implemented URI yet)
-        SALMON // 34 (not implemented URI yet)
+        SALMON, // 34 (not implemented URI yet)
+        IRON_SWORD_OF_FIRE, // 35 (not implemented URI yet)
+        FIRE_ORB // 36 (not implemented in URI yet)
     }
 
     // (I can format these better, "grouping" them horizontal for less space)
@@ -236,7 +245,6 @@ abstract contract StructEnumEventError {
     error InvalidCraftingOutput(); // 0xd03be717
     error CannotUnequipNothing(); // 0x92746c1a
     error ItemNotEquipped(); // 0x54962c76
-    error AlreadyEquipped(); // 0x2e53a303
     error InvalidWeaponElementType(); // 0x14229251
     error SameBuffType(); // 0xb7b2c020
     error NotAConsumable(); // 0xcab7a8b8
