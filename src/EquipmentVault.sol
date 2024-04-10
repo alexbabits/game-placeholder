@@ -6,7 +6,7 @@ import {StructEnumEventError} from "./StructEnumEventError.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 
-// Holds all equipped gear from players so it cannot be transferred/burned while it's equipped.
+// Holds all equipped gear from players so the Token gear items cannot be transferred/burned while equipped.
 contract EquipmentVault is ERC1155Holder, Ownable, StructEnumEventError {
     address private game;
     constructor(address initialOwner) Ownable(initialOwner) {}

@@ -21,9 +21,15 @@ library Calculate {
         return timeToGather;
     }
 
-    function combatLevel(uint8 vitalityLevel, uint8 strengthLevel, uint8 agilityLevel, uint8 intelligenceLevel) internal pure returns (uint8) {
-        uint8 _combatLevel = (vitalityLevel + strengthLevel + agilityLevel + intelligenceLevel) / 4;
+    function combatLevel(uint8 vitalityLevel, uint8 strengthLevel, uint8 agilityLevel, uint8 intelligenceLevel) internal pure returns (int8) {
+        int8 _combatLevel = int8((vitalityLevel + strengthLevel + agilityLevel + intelligenceLevel) / 4);
         return _combatLevel;
+    }
+
+    function damagePerHit(int16 power, int16 targetProtection) internal pure returns (int16) {
+        int16 damage = power - targetProtection;
+        if (damage < 0) damage = 0;
+        return damage;
     }
 
 }

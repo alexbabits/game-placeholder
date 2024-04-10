@@ -1,11 +1,15 @@
+## To-Do
+0. Contract is 37kB... Need to split into diamond pattern.
+1. Make it cleaner.
+2. Exhaustive game mechanisms cleaned up, URI placeholders
+3. Tests (unit, fuzz, FV)
+4. Front-end
 
-Local Deployment: 
-1. `anvil --block-time 5` if you want mined blocks every 5 seconds, or just `anvil`.
-2. `forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 --broadcast`
+### Local Deployment
+1. `anvil --block-time 5` if you want to simulate mined blocks every 5 seconds, or just `anvil`.
+2. `forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 --broadcast`. REMINDER - IF YOU ADD/REMOVE CONTRACTS THE ADDRESSES WILL CHANGE
 
-WARNING!!! IF YOU ADD/REMOVE CONTRACTS THESE ADDRESSES WILL CHANGE
-
-Local Interactions:
+* Local Interactions
 // Variables
 1. `export OWNER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"; export FUNDING="0x5FbDB2315678afecb367f032d93F642f64180aa3"; export GAME="0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"; export CHAR_PRICE=5000000000000000000`
 
@@ -32,12 +36,7 @@ Local Interactions:
 8. `cast call $GAME "balanceOf(address,uint256)" $OWNER 11` // gets 1 log (11)
 
 
-
-
-
-
-
-Mumbai Deployment: 
+### Mumbai Deployment 
 1. `forge script script/Deploy.s.sol --rpc-url $MUMBAI_RPC_URL --private-key $PRIVATE_KEY_A`
 
 

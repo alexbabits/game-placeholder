@@ -11,12 +11,17 @@ import {Funding} from "../src/Funding.sol";
 import {EquipmentVault} from "../src/EquipmentVault.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
+import {VRFCoordinatorV2Mock} from "@chainlink/src/v0.8/vrf/mocks/VRFCoordinatorV2Mock.sol";
+
+//Note: Barely started any testing.
+
 contract Testing is Test, StructEnumEventError {
     using Strings for uint256;
 
     Game game;
     Funding funding;
     EquipmentVault equipmentVault;
+    VRFCoordinatorV2Mock coordinator;
 
     address Alice = address(0xA11CE);
     address Bob = address(0xB0B);
@@ -25,12 +30,34 @@ contract Testing is Test, StructEnumEventError {
     string baseURI = "https://bafybeicbsj7vdebm7qpis7fhhpruykpnn6niepcngg2b55gwxtg2nsneri.ipfs.nftstorage.link/";
     uint256 numTokens = 15; // Current number of tokens in the game.
 
+    uint96 baseFee = 1e17; // 0.1 base LINK fee
+    uint96 gasPriceLink = 1e9; // gas price
+
+    bytes32 keyHash = 0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c; // VRF gas lane option, Sepolia only has this one
+    uint32 callbackGasLimit = 40000; // VRF gas limit for `fulfillRandomWords()` callback execution.
+    uint16 private requestConfirmations = 3; // VRF number of block confirmations to prevent re-orgs.
+
     function setUp() public {
 
+        // Deploy mock VRF coordinator, setup and fund subscription
+        coordinator = new VRFCoordinatorV2Mock(baseFee, gasPriceLink);
+        uint64 subscriptionId = coordinator.createSubscription();
+        coordinator.fundSubscription(subscriptionId, 1_000_000e18);
+
+        // Deploy contracts
         address Owner = address(this);
         funding = new Funding(Owner);
         equipmentVault = new EquipmentVault(Owner);
-        game = new Game(Owner, address(funding), address(equipmentVault));
+        game = new Game(
+            Owner, 
+            address(funding), 
+            address(equipmentVault),
+            subscriptionId, 
+            keyHash, 
+            callbackGasLimit, 
+            requestConfirmations, 
+            address(coordinator)
+        );
 
         equipmentVault.setGameAddress(address(game));
         equipmentVault.renounceOwnership();
